@@ -13,7 +13,6 @@ import Typography from "@material-ui/core/Typography";
 
 // ICONS
 import SpeedIcon from "@material-ui/icons/Speed";
-import Icon from "@material-ui/icons/";
 import AssignmentIcon from "@material-ui/icons/Assignment";
 import PersonIcon from "@material-ui/icons/Person";
 import TodayIcon from '@material-ui/icons/Today';

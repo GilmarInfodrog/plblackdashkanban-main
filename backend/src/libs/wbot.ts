@@ -6,8 +6,11 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   AuthenticationCreds,
   makeInMemoryStore,
-  isJidBroadcast
+  isJidBroadcast,
+  BinaryNode,
+  getBinaryNodeChild
 } from "@whiskeysockets/baileys";
+import { randomBytes } from "crypto";
 import makeWALegacySocket from "@whiskeysockets/baileys";
 import P from "pino";
 
@@ -98,7 +101,7 @@ export const initWASocket = async (whatsapp: Whatsapp): Promise<Session> => {
           auth: state as AuthenticationState,
           generateHighQualityLinkPreview: false,
           shouldIgnoreJid: jid => isJidBroadcast(jid),
-          browser: ["Chat", "Chrome", "10.15.7"],
+          browser: ["Ubuntu", "Chrome", "22.04.4"],
           patchMessageBeforeSending: (message) => {
             const requiresPatch = !!(
                 message.buttonsMessage ||
@@ -122,6 +125,40 @@ export const initWASocket = async (whatsapp: Whatsapp): Promise<Session> => {
             return message;
         },
         })
+
+        // Desde jul/2026 o WhatsApp envia "companion_reg_refresh" durante o
+        // pareamento pedindo um novo advSecretKey. O Baileys 6.x ignora o aviso
+        // e o QR continua com a chave antiga ("Não foi possível conectar o
+        // dispositivo"). Mesma logica do PR #2765 do Baileys.
+        let lastQrCode = "";
+        const withCurrentAdvSecret = (qrCode: string): string => {
+          const parts = qrCode.split(",");
+          parts[3] = wsocket.authState.creds.advSecretKey;
+          return parts.join(",");
+        };
+
+        wsocket.ws.on("CB:notification", async (node: BinaryNode) => {
+          const isRegRefresh =
+            node.attrs?.type === "companion_reg_refresh" ||
+            !!getBinaryNodeChild(node, "companion_reg_refresh") ||
+            !!getBinaryNodeChild(node, "pair-device-rotate-qr");
+
+          // depois de pareado a chave nao pode mudar
+          if (!isRegRefresh || !wsocket || wsocket.authState.creds.me) return;
+
+          const advSecretKey = randomBytes(32).toString("base64");
+          Object.assign(wsocket.authState.creds, { advSecretKey });
+          wsocket.ev.emit("creds.update", { advSecretKey });
+          logger.info(`Session ${name} advSecretKey renovado (companion_reg_refresh)`);
+
+          if (!lastQrCode) return;
+          lastQrCode = withCurrentAdvSecret(lastQrCode);
+          await whatsapp.update({ qrcode: lastQrCode });
+          io.emit(`company-${whatsapp.companyId}-whatsappSession`, {
+            action: "update",
+            session: whatsapp
+          });
+        });
 
         wsocket.ev.on(
           "connection.update",
@@ -207,8 +244,11 @@ export const initWASocket = async (whatsapp: Whatsapp): Promise<Session> => {
                 logger.info(`Session QRCode Generate ${name}`);
                 retriesQrCodeMap.set(id, (retriesQrCode += 1));
 
+                // o Baileys reaproveita a chave antiga nos QRs seguintes
+                lastQrCode = withCurrentAdvSecret(qr);
+
                 await whatsapp.update({
-                  qrcode: qr,
+                  qrcode: lastQrCode,
                   status: "qrcode",
                   retries: 0
                 });
